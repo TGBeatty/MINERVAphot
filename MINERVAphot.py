@@ -1,6 +1,8 @@
 import numpy, progressbar, astropy, math, sys, os
 import photutils as pu
 
+#comment
+
 def MakeBias(fitslist, outloc):
 	if not os.path.exists(outloc):
 		os.makedirs(outloc)
