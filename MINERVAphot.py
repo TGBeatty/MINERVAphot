@@ -193,6 +193,7 @@ def SingleAper(fitslist, AperProps):
 		flux[i] = raw_table['aperture_sum'] - photbkg
 		error[i] = numpy.sqrt(raw_table['aperture_sum'] + photbkg)
 		bar.update(i+1)
+		hdulist.close()
 	bar.finish()
 
 	toreturn = numpy.column_stack((jdutc, flux, error, airmass, xcenter, ycenter))
@@ -206,10 +207,10 @@ def MultiAper(fitslist, AperProps):
 
 	nimages = len(fitslist)
 	jdutc = numpy.zeros(nimages)
-	flux = numpy.zeros((nstars,nimages))
-	error = numpy.zeros((nstars,nimages))
-	xcenter = numpy.zeros((nstars,nimages))
-	ycenter = numpy.zeros((nstars,nimages))
+	flux = numpy.zeros((nimages,nstars,))
+	error = numpy.zeros((nimages,nstars))
+	xcenter = numpy.zeros((nimages,nstars))
+	ycenter = numpy.zeros((nimages,nstars))
 	airmass = numpy.zeros(nimages)
 
 	print "Extracting photometry..."
@@ -223,10 +224,10 @@ def MultiAper(fitslist, AperProps):
 		alt = numpy.float(hdulist[0].header['OBJCTALT'])*math.pi/180.
 		airmass[i] = 1./numpy.cos((math.pi/2.)-alt)
 
+		w = astropy.wcs.WCS(hdulist[0].header)
 		for j in range(nstars):
 			try:
 				wcscheck = hdulist[0].header['WCSAXES']
-				w = astropy.wcs.WCS(hdulist[0].header)
 				WCScenter = w.wcs_world2pix(RAlist[j]*15., Declist[j], 0)
 			except KeyError: # If there is no WCS solution
 				try:
@@ -246,8 +247,8 @@ def MultiAper(fitslist, AperProps):
 				sys.exit()
 
 			centerloc = HowellCenter(image, WCScenter, AperProps['L'])
-			xcenter[j,i] = centerloc[0]
-			ycenter[j,i] = centerloc[1]
+			xcenter[i,j] = centerloc[0]
+			ycenter[i,j] = centerloc[1]
 
 			photaper = pu.CircularAperture(centerloc, r=AperProps['rAp'])
 			bkgaper = pu.CircularAnnulus(centerloc, r_in=AperProps['rBkgIn'], r_out=AperProps['rBkgOut'])
@@ -255,8 +256,9 @@ def MultiAper(fitslist, AperProps):
 			bkg_table = pu.aperture_photometry(image, bkgaper)
 			bkgmean = bkg_table['aperture_sum'] / bkgaper.area()
 			photbkg = bkgmean*photaper.area()
-			flux[j,i] = raw_table['aperture_sum'] - photbkg
-			error[j,i] = numpy.sqrt(raw_table['aperture_sum'] + photbkg)
+			flux[i,j] = raw_table['aperture_sum'] - photbkg
+			error[i,j] = numpy.sqrt(raw_table['aperture_sum'] + photbkg)
+		hdulist.close()
 		bar.update(i+1)
 	bar.finish()
 
@@ -264,33 +266,84 @@ def MultiAper(fitslist, AperProps):
 	return toreturn
 
 def on_click(event):
-	global PickedLocsPix, w, fig
+	global PickedLocsPix, w, fig, WCSLocsStore, FirstFlag, image
 
 	if event.inaxes is not None:
-		WCSloc = w.wcs_pix2world(event.xdata, event.ydata, 0)
-		fig.show_markers(WCSloc[0], WCSloc[1])
-		temp = [event.xdata, event.ydata]
-		PickedLocsPix = numpy.vstack((PickedLocsPix,temp))
+		recentered = HowellCenter(image, [event.xdata,event.ydata], 20)
+		if FirstFlag: 
+			WCSLocsStore = w.wcs_pix2world(recentered[0], recentered[1], 0)
+			PickedLocsPix = recentered
+			fig.show_markers(WCSLocsStore[0], WCSLocsStore[1], layer='Markers')
+			FirstFlag = False
+		else:
+			WCSLocsStore = numpy.vstack((WCSLocsStore,w.wcs_pix2world(recentered[0], recentered[1], 0)))
+			PickedLocsPix = numpy.vstack((PickedLocsPix,recentered))
+			fig.show_markers(WCSLocsStore[:,0], WCSLocsStore[:,1], layer='Markers')
 		fig.refresh()
 	else:
-		print 'Clicked ouside axes bounds but inside plot window'
+		print 'Error: clicked outside axes bounds but inside plot window'
+
+def on_key(event):
+	global PickedLocsPix, fig, WCSLocsStore, FirstFlag
+
+	if event.key=='backspace':
+		if not FirstFlag:
+			if WCSLocsStore.size > 0:
+				WCSLocsStore = numpy.delete(WCSLocsStore, -1, 0)
+				PickedLocsPix = numpy.delete(PickedLocsPix, -1, 0)
+				if WCSLocsStore.size > 0:
+					fig.show_markers(WCSLocsStore[:,0], WCSLocsStore[:,1], layer='Markers')
+				else: fig.remove_layer('Markers') # show nothing if no entries
+			fig.refresh()
+	if event.key=='enter':
+		plt.close()
+		plt.clf()
+	if event.key=='escape':
+		plt.close()
+		plt.clf()
 
 def GraphicalPickLocs(imagename):
-	global PickedLocsPix, w, fig
+	global PickedLocsPix, w, fig, WCSLocsStore, FirstFlag, image
 
-	PickedLocsPix = numpy.zeros(2)
-	mplfig = plt.figure()
+	PickedLocsPix = numpy.zeros((2,1))
+	WCSLocsStore = numpy.zeros((2,1))
+	FirstFlag = True
+	StillNeedToPick = True
+
 	hdulist = astropy.io.fits.open(imagename)
+	image = hdulist[0].data 
 	w = astropy.wcs.WCS(hdulist[0].header)
-	fig = aplpy.FITSFigure(imagename, figure=mplfig)
-	fig.show_grayscale()
-	fig.set_xaxis_coord_type('longitude')
-	fig.set_yaxis_coord_type('latitude')
-	fig.tick_labels.set_xformat('dd.dddddd')
-	fig.tick_labels.set_yformat('dd.dddddd')
-	mplfig.canvas.callbacks.connect('button_press_event', on_click)
-	plt.show()
-	PickedLocsPix = PickedLocsPix[1:]
-	PickedLocsWCS = w.wcs_pix2world(PickedLocsPix[:,0], PickedLocsPix[:,1], 0)
+	while StillNeedToPick:
+		mplfig = plt.figure()
+		fig = aplpy.FITSFigure(imagename, figure=mplfig)
+		fig.show_grayscale()
+		fig.set_xaxis_coord_type('longitude')
+		fig.set_yaxis_coord_type('latitude')
+		fig.tick_labels.set_xformat('dd.dddddd')
+		fig.tick_labels.set_yformat('dd.dddddd')
+		cid1 = mplfig.canvas.callbacks.connect('button_press_event', on_click)
+		cid2 = mplfig.canvas.callbacks.connect('key_press_event', on_key)
+		print "-----------------------------------------------------------------------"
+		print "Pick locations for the apertures. Don't worry, they will be recentered!"
+		print "Keystrokes need to happen with the plot window active."
+		print "Left-click: place aperture center"
+		print "Enter / escape: finish and close window"
+		print "-----------------------------------------------------------------------"
+		plt.show()
+		plt.clf()
+		plt.close()
+		mplfig.canvas.mpl_disconnect(cid1)
+		mplfig.canvas.mpl_disconnect(cid2)
+		if (FirstFlag or len(PickedLocsPix)==0): # didn't pick at all
+			print "ERROR: you didn't pick any locations. Trying again..."
+		else:
+			try: 
+				test = PickedLocsPix.shape
+				PickedLocsWCS = w.wcs_pix2world(PickedLocsPix[:,0], PickedLocsPix[:,1]	, 0)
+				StillNeedToPick = False
+			except AttributeError: # picked just one location
+				PickedLocsWCS = w.wcs_pix2world(PickedLocsPix[0], PickedLocsPix[1], 0)
+				StillNeedToPick = False
 
+	hdulist.close()
 	return PickedLocsWCS
