@@ -1,17 +1,33 @@
-import numpy, progressbar, astropy, math, sys, os, aplpy
+import numpy, progressbar, astropy, math, sys, os, aplpy, subprocess, json
 import photutils as pu
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
-def MakeBias(fitslist, outloc, skip=False):
+def MakeBias(firstarg, uselist=False, skip=False, outloc='./', telno='none'):
 	if not os.path.exists(outloc):
 		os.makedirs(outloc)
 
-	nimages = len(fitslist)
-	biasloc = outloc+"mbias.fits"
+	if uselist:
+		fitslist = firstarg
+		biasloc = outloc+"mbias.fits"
+		print "Making bias image..."
+		nimages = len(fitslist)
+	else:
+		night = firstarg
+		if telno=='none':
+			print "ERROR: You need to specify what telescope in the bias creation. Stopping."
+			sys.exit()
+		subprocess.call("ls ./"+night+"/*"+telno+".Bias.* > biases.list", shell=True)
+		nfiles = len(open("biases.list").readlines())
+		if nfiles==0:
+			print "ERROR: There are no biases for "+telno+" on the night specified. Stopping."
+			sys.exit()
+		fitslist = numpy.loadtxt('biases.list', dtype='object')
+		biasloc = "./"+night+"/mbias."+telno+".fits"
+		print "Making "+telno+" bias image..."
+		nimages = len(fitslist)
 
 	if not skip:
-		print "Making bias image..."
 		bar = progressbar.ProgressBar(maxval=nimages, widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 		for i in range(nimages):
 			hdulist = astropy.io.fits.open(fitslist[i])
@@ -21,74 +37,149 @@ def MakeBias(fitslist, outloc, skip=False):
 			tomedian[i,:,:] = hdulist[0].data
 			bar.update(i+1)
 		bar.finish()
-
 		hdulist[0].data = numpy.median(tomedian, axis=0)
 		hdulist.writeto(biasloc, clobber=True)
+	else:
+		print "Skipping!"
 
 	return biasloc
 
-def MakeDark(fitslist, outloc, mbiasloc, skip=False):
+def MakeDark(firstarg, mbiasloc, uselist=False, skip=False, outloc='./', telno='none'):
 	if not os.path.exists(outloc):
 		os.makedirs(outloc)
 
-	nimages = len(fitslist)
-	darkloc = outloc+"mdark.fits"
+	if uselist:
+		fitslist = firstarg
+		darkloc = outloc+"mdark.fits"
+		print "Making dark image..."
+		nimages = len(fitslist)
+	else:
+		night = firstarg
+		if telno=='none':
+			print "ERROR: You need to specify what telescope in the dark creation. Stopping."
+			sys.exit()
+		subprocess.call("ls ./"+night+"/*"+telno+".Dark.* > darks.list", shell=True)
+		nfiles = len(open("darks.list").readlines())
+		if nfiles==0:
+			print "ERROR: There are no darks for "+telno+" on the night specified. Stopping."
+			sys.exit()
+		fitslist = numpy.loadtxt('darks.list', dtype='object')
+		darkloc = "./"+night+"/mdark."+telno+".fits"
+		print "Making "+telno+" dark image..."
+		nimages = len(fitslist)
 
 	if not skip:
 		hdulist = astropy.io.fits.open(mbiasloc)
 		bias = hdulist[0].data
-
-		print "Making dark image..."
 		bar = progressbar.ProgressBar(maxval=nimages, widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 		for i in range(nimages):
 			hdulist = astropy.io.fits.open(fitslist[i])
 			if i == 0:
 				size = (nimages,hdulist[0].data.shape[0],hdulist[0].data.shape[1])
 				tomedian = numpy.zeros(size)
-			tomedian[i,:,:] = hdulist[0].data - bias
+			exptime = numpy.float(hdulist[0].header['EXPTIME'])
+			tomedian[i,:,:] = (hdulist[0].data - bias) / exptime
 			bar.update(i+1)
 		bar.finish()
 
 		hdulist[0].data = numpy.median(tomedian, axis=0)
 		hdulist.writeto(darkloc, clobber=True)
+	else:
+		print "Skipping!"
 
 	return darkloc
 
-def MakeFlat(fitslist, outloc, mbiasloc, mdarkloc, skip=False):
+def MakeFlat(firstarg, mbiasloc, mdarkloc, imgfilter='none', uselist=False, skip=False, outloc='./', telno='none'):
 	if not os.path.exists(outloc):
 		os.makedirs(outloc)
 
-	nimages = len(fitslist)
-	flatloc = outloc+"mflat.fits"
+	if uselist:
+		print "Making flat image..."
+		if not skip:
+			fitslist = firstarg
+			flatloc = outloc+"mflat.fits"
+			nimages = len(fitslist)
+	else:
+		night = firstarg
+		flatloc = "./"+night+"/mflat."+imgfilter+"."+telno+".fits"
+		if telno=='none':
+			print "ERROR: You need to specify what telescope to use (T1, T2, etc.) in the flat creation. Stopping."
+			sys.exit()
+		if imgfilter=='none':
+			print "ERROR: You need to specify what filter to use (V, gp, etc.) in the flat creation. Stopping."
+			sys.exit()
+
+		if not skip:
+			subprocess.call("ls ./"+night+"/*"+telno+".SkyFlat."+imgfilter+".* > flats.list", shell=True)
+			nfiles = len(open("flats.list").readlines())
+			if nfiles==0:
+				AlreadyThere = os.path.isfile(flatloc)
+				if AlreadyThere: 
+					print "No flats in "+imgfilter+" for "+telno+" on the night of "+night+", but there's already a median flat present. Using that and skipping creation."
+					skip = True
+				else: 
+					print "ERROR: There are no flats in "+imgfilter+" for "+telno+" on the night specified, and no provided median flat. Stopping."
+					sys.exit()
+			if not skip:
+				fitslist = numpy.loadtxt('flats.list', dtype='object')
+				nimages = len(fitslist)
+		print "Making "+telno+" "+imgfilter+" flat image..."
 
 	if not skip:
 		hdulist = astropy.io.fits.open(mbiasloc)
 		bias = hdulist[0].data
 		hdulist = astropy.io.fits.open(mdarkloc)
 		dark = hdulist[0].data
-
-		print "Making flat image..."
 		bar = progressbar.ProgressBar(maxval=nimages, widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 		for i in range(nimages):
 			hdulist = astropy.io.fits.open(fitslist[i])
 			if i == 0:
 				size = (nimages,hdulist[0].data.shape[0],hdulist[0].data.shape[1])
 				tomedian = numpy.zeros(size)
-			tomedian[i,:,:] = (hdulist[0].data - bias - dark) / numpy.median(hdulist[0].data)
+			exptime = numpy.float(hdulist[0].header['EXPTIME'])
+			scaleddark = dark * exptime
+			tomedian[i,:,:] = (hdulist[0].data - bias - scaleddark) / numpy.median(hdulist[0].data)
 			bar.update(i+1)
 		bar.finish()
 
 		hdulist[0].data = numpy.median(tomedian, axis=0)
 		hdulist.writeto(flatloc, clobber=True)
+	else:
+		print "Skipping!"
 
 	return flatloc
 
-def BiasDarkFlat(fitslist, outloc, mbiasloc, mdarkloc, mflatloc, skip=False):
+def BiasDarkFlat(firstarg, mbiasloc, mdarkloc, mflatloc, imgfilter='none', uselist=False, skip=False, outloc='./', telno='none'):
 	if not os.path.exists(outloc):
 		os.makedirs(outloc)
 
-	nimages = len(fitslist)
-	procimgloc = numpy.empty(nimages, dtype='object') # What will be the list of processed images
+	if uselist:
+		print "Calibrating images..."
+		if not skip:
+			fitslist = firstarg
+			nimages = len(fitslist)
+			procimgloc = numpy.empty(nimages, dtype='object') # What will be the list of processed images
+	else:
+		night = firstarg
+		outloc = "./"+night+"/Processed/"
+		if not os.path.exists(outloc):
+			os.makedirs(outloc)
+		if telno=='none':
+			print "ERROR: You need to specify what telescope to use (T1, T2, etc.) in the calibration. Stopping."
+			sys.exit()
+		if imgfilter=='none':
+			print "ERROR: You need to specify what filter to use (V, gp, etc.) in the caliberation stage. Stopping."
+			sys.exit()
+
+		subprocess.call("find ./"+night+"/ -maxdepth 1 -type f -not -name \"*SkyFlat*\" -name \"*"+telno+".*."+imgfilter+"*\" > images.list", shell=True) # excludes the skyflat images
+		nfiles = len(open("images.list").readlines())
+		if nfiles==0:
+			print "WARNING: There are no science images for a detected filter. Something's wrong somewhere. Continuing."
+			skip = True
+		fitslist = numpy.loadtxt('images.list', dtype='object')
+		nimages = len(fitslist)
+		procimgloc = numpy.empty(nimages, dtype='object') # What will be the list of processed images
+		print "Calibrating "+telno+" "+imgfilter+" images..."
 
 	if not skip:
 		hdulist = astropy.io.fits.open(mbiasloc)
@@ -98,12 +189,13 @@ def BiasDarkFlat(fitslist, outloc, mbiasloc, mdarkloc, mflatloc, skip=False):
 		hdulist = astropy.io.fits.open(mflatloc)
 		flat = hdulist[0].data 
 
-		print "Calibrating images..."
 		bar = progressbar.ProgressBar(maxval=nimages, widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 		for i in range(nimages):
 			hdulist = astropy.io.fits.open(fitslist[i])
 			image = hdulist[0].data
-			hdulist[0].data = (image - bias - dark) / flat
+			exptime = numpy.float(hdulist[0].header['EXPTIME'])
+			scaleddark = dark * exptime
+			hdulist[0].data = (image - bias - scaleddark) / flat
 			splitname = fitslist[i].split('/')
 			filenamesplit = splitname[-1].partition('.fit')
 			procimgloc[i] = outloc+filenamesplit[0]+".proc"+filenamesplit[1]+filenamesplit[2]
@@ -117,6 +209,67 @@ def BiasDarkFlat(fitslist, outloc, mbiasloc, mdarkloc, mflatloc, skip=False):
 			procimgloc[i] = outloc+filenamesplit[0]+".proc"+filenamesplit[1]+filenamesplit[2]
 
 	return procimgloc
+
+def CalibrateNight(night, telno, skipbias=False, skipdark=False, skipflat=False, skipproc=False):
+	print "-----------------------------------------------------------------------"
+	print "Calibrating an entire night at once, based on the target file."
+	print "Night: "+night
+	print "Telescope: "+telno
+	print "-----------------------------------------------------------------------"
+
+	targetfilename = night+'.txt'
+
+	readin = []
+	with open(targetfilename, 'r') as targetfile:
+		for line in targetfile:
+			readin.append(json.loads(line))
+	startcals = readin[0]
+	endcals = readin[1]
+	ntargetsOG = len(readin)-2
+	nameOG = numpy.zeros(ntargetsOG, dtype='object')
+	raOG = numpy.zeros(ntargetsOG, dtype='object')
+	decOG = numpy.zeros(ntargetsOG, dtype='object')
+	exptimeOG = numpy.zeros(ntargetsOG, dtype='object')
+	filtersOG = numpy.zeros(ntargetsOG, dtype='object')
+	for i in range(ntargetsOG):
+		targline = readin[i+2]
+		nameOG[i] = targline['name']
+		raOG[i] = targline['ra']
+		decOG[i] = targline['dec']
+		exptimeOG[i] = targline['exptime']
+		filtersOG[i] = targline['filter']
+
+	# find the unique filters
+	filtersIndiv = numpy.zeros(1, dtype='object')
+	for i in range(ntargetsOG):
+		nfilter = len(filtersOG[i])
+		filtertemp = filtersOG[i]
+		for j in range(nfilter): filtersIndiv = numpy.append(filtersIndiv, filtertemp[j])
+	filtersIndiv = numpy.delete(filtersIndiv, 0)
+	filters = numpy.unique(filtersIndiv)
+
+	biasloc = MakeBias(night, telno=telno, skip=skipbias)
+	darkloc = MakeDark(night, biasloc, telno=telno, skip=skipdark)
+	procimgs = {}
+	for imgfilter in filters:
+		flatloc = MakeFlat(night, biasloc, darkloc, imgfilter=imgfilter, telno=telno, skip=skipflat)
+		procimgs[imgfilter] = BiasDarkFlat(night, biasloc, darkloc, flatloc, imgfilter=imgfilter, telno=telno, skip=skipproc)
+
+	return procimgs, filters
+
+def CalibrateList(unproclist, biaslist, darklist, flatlist, outloc, skipbias=False, skipdark=False, skipflat=False, skipproc=False):
+	print "-----------------------------------------------------------------------"
+	print "Calibrating a list of images, using lists of calibration images."
+	print "-----------------------------------------------------------------------"
+
+	biasloc = MakeBias(biaslist, outloc=outloc, uselist=True, skip=skipbias)
+	darkloc = MakeDark(darklist, biasloc, outloc=outloc, uselist=True, skip=skipdark)
+	flatloc = MakeFlat(flatlist, biasloc, darkloc, outloc=outloc, uselist=True, skip=skipflat)
+	procimgs = {}
+	procimgs['nofilter'] = BiasDarkFlat(unproclist, biasloc, darkloc, flatloc, outloc=outloc, uselist=True, skip=skipproc)
+
+	return procimgs
+
 
 def HowellCenter(image, center, L):
 	# Howell centroiding
@@ -196,7 +349,7 @@ def SingleAper(fitslist, AperProps):
 		hdulist.close()
 	bar.finish()
 
-	toreturn = numpy.column_stack((jdutc, flux, error, airmass, xcenter, ycenter))
+	toreturn = numpy.column_stack((jdutc, airmass, flux, error, xcenter, ycenter))
 	return toreturn
 
 def MultiAper(fitslist, AperProps):
@@ -262,7 +415,7 @@ def MultiAper(fitslist, AperProps):
 		bar.update(i+1)
 	bar.finish()
 
-	toreturn = numpy.column_stack((jdutc, flux, error, airmass, xcenter, ycenter))
+	toreturn = numpy.column_stack((jdutc, airmass, flux, error, xcenter, ycenter))
 	return toreturn
 
 def on_click(event):
@@ -325,8 +478,10 @@ def GraphicalPickLocs(imagename):
 		cid2 = mplfig.canvas.callbacks.connect('key_press_event', on_key)
 		print "-----------------------------------------------------------------------"
 		print "Pick locations for the apertures. Don't worry, they will be recentered!"
+		print "The first aperture will be the target."
 		print "Keystrokes need to happen with the plot window active."
 		print "Left-click: place aperture center"
+		print "Backspace: delete previous aperture"
 		print "Enter / escape: finish and close window"
 		print "-----------------------------------------------------------------------"
 		plt.show()
@@ -347,3 +502,42 @@ def GraphicalPickLocs(imagename):
 
 	hdulist.close()
 	return PickedLocsWCS
+
+def SimpleDetrend(photresults):
+	ncols = photresults.shape[1]
+	nstars = (ncols-2)/4
+
+	data = {}
+	data['time'] = photresults[:,0]
+	data['airmass'] = photresults[:,1]
+	errstart = 2+nstars
+	xcstart = errstart + nstars
+	ycstart = xcstart + nstars
+	for i in range(nstars):
+		data["flux"+str(i)] = photresults[:,(2+i)]
+		data["error"+str(i)] = photresults[:,(errstart+i)]
+		data["xcent"+str(i)] = photresults[:,(xcstart+i)]
+		data["ycent"+str(i)] = photresults[:,(ycstart+i)]
+
+	target = [0]
+	detrend = numpy.arange(1,nstars)
+
+	#print "Detrend stars are star numbers:"
+	#print detrend
+
+	targetflux = photresults[:,(2+target[0])]
+	detrendflux = photresults[:,(2+detrend)]
+	targeterror = photresults[:,(errstart+target[0])]
+	detrenderror = photresults[:,(errstart+detrend)]
+
+	normtarget = targetflux / numpy.median(targetflux)
+	normtargeterror = targeterror / numpy.median(targetflux)
+	detrendsum = numpy.sum(detrendflux, axis=1)
+	detrendsumerror = numpy.sqrt(numpy.sum(detrenderror**2., axis=1))
+	normdetrend = detrendsum / numpy.median(detrendsum)
+	normdetrenderror = detrendsumerror / numpy.median(detrendsum)
+
+	targetdetrend = normtarget / normdetrend
+	targetdetrenderror = targetdetrend * numpy.sqrt((normtargeterror/normtarget)**2. + (normdetrenderror/normdetrend)**2.)
+
+	return targetdetrend, targetdetrenderror
