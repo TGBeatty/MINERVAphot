@@ -16,6 +16,8 @@ Right now, it can do:
 
 5) Does a simple detrending of mult-aperture results.
 
+6) Do absolute photometry of a single target star using a set of Sloan standard stars. See AbsPhotDemo.py for an example.
+
 ---------------------------------------
 
 Otherwise, it requires the user to specify the location of the target star(s), the size of the photometric aperture, and the size of the background annulus. Right now it uses the same aperture and annulus sizes for everything.
