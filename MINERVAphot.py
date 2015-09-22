@@ -1,6 +1,8 @@
 import numpy, progressbar, astropy, math, sys, os, aplpy, subprocess, json
+import pandas
 import photutils as pu
 import matplotlib.pyplot as plt
+import statsmodels.formula.api as sm
 from matplotlib.colors import LogNorm
 
 def MakeBias(firstarg, uselist=False, skip=False, outloc='./', telno='none'):
@@ -309,8 +311,11 @@ def SingleAper(fitslist, AperProps):
 		starttime = numpy.float(hdulist[0].header['JD'])
 		exptime = numpy.float(hdulist[0].header['EXPTIME'])
 		jdutc[i] = starttime + ((exptime/2.)/(24.*60*60.))
-		alt = numpy.float(hdulist[0].header['OBJCTALT'])*math.pi/180.
-		airmass[i] = 1./numpy.cos((math.pi/2.)-alt)
+		try:
+			alt = numpy.float(hdulist[0].header['OBJCTALT'])*math.pi/180.
+			airmass[i] = 1./numpy.cos((math.pi/2.)-alt)
+		except KeyError:
+			airmass[i] = hdulist[0].header['AIRMASS']
 
 		try:
 			wcscheck = hdulist[0].header['WCSAXES']
@@ -374,8 +379,11 @@ def MultiAper(fitslist, AperProps):
 		starttime = numpy.float(hdulist[0].header['JD'])
 		exptime = numpy.float(hdulist[0].header['EXPTIME'])
 		jdutc[i] = starttime + ((exptime/2.)/(24.*60*60.))
-		alt = numpy.float(hdulist[0].header['OBJCTALT'])*math.pi/180.
-		airmass[i] = 1./numpy.cos((math.pi/2.)-alt)
+		try:
+			alt = numpy.float(hdulist[0].header['OBJCTALT'])*math.pi/180.
+			airmass[i] = 1./numpy.cos((math.pi/2.)-alt)
+		except KeyError:
+			airmass[i] = hdulist[0].header['AIRMASS']
 
 		w = astropy.wcs.WCS(hdulist[0].header)
 		for j in range(nstars):
@@ -541,3 +549,125 @@ def SimpleDetrend(photresults):
 	targetdetrenderror = targetdetrend * numpy.sqrt((normtargeterror/normtarget)**2. + (normdetrenderror/normdetrend)**2.)
 
 	return targetdetrend, targetdetrenderror
+
+def WLSFit(xvals, yvals, yerrors):
+	ws = pandas.DataFrame({'x': xvals,'y': yvals})
+	weights = pandas.Series(yerrors)
+	wls_fit = sm.wls('y ~ x', data=ws, weights=1 / weights).fit()
+	fitresult = wls_fit.params
+	intercept = fitresult[0]
+	slope = fitresult[1]
+	confint = wls_fit.conf_int(alpha=0.34)
+	lowvals = confint[0]
+	highvals = confint[1]
+	slope_error = (numpy.fabs(slope-lowvals[1])+numpy.fabs(slope-highvals[1]))/2.
+	intercept_error = (numpy.fabs(intercept-lowvals[0])+numpy.fabs(intercept-highvals[0]))/2.
+	return slope, slope_error, intercept, intercept_error
+
+def FindExtinctionCoeff(photresults, debugPlot=False):
+	ncols = photresults.shape[1]
+	nstars = (ncols-2)/4
+
+	airmass = photresults[:,1]
+	results = numpy.zeros((nstars,4))
+	errstart = 2+nstars
+	for i in range(nstars):
+		flux = photresults[:,(2+i)]
+		fluxerror = photresults[:,(errstart+i)]
+		instmag = 25.0-2.5*numpy.log10(flux)
+		instmagerror = 2.5 * 0.434 * fluxerror/flux
+
+		if debugPlot:
+			print instmag
+			plt.plot(photresults[:,0], instmag, '.')
+			plt.show()
+			plt.clf()
+
+		slope, slope_error, intercept, intercept_error = WLSFit(airmass, instmag, instmagerror)
+		results[i,0] = slope
+		results[i,1] = slope_error
+		results[i,2] = intercept
+		results[i,3] = intercept_error
+
+	avgslope = numpy.average(results[:,0])
+	avgslopeerr = numpy.sqrt(numpy.sum(results[:,1]**2)) / nstars
+	return avgslope, avgslopeerr, results
+
+def CalcAbsPhotCoeff(photresults1, photresults2, mag1, magerr1, mag2, magerr2):
+	k1, kerr1, kresults1 = FindExtinctionCoeff(photresults1)
+	k2, kerr2, kresults2 = FindExtinctionCoeff(photresults2)
+
+	imag1 = kresults1[:,2]
+	imagerr1 = kresults1[:,3]
+	imag2 = kresults2[:,2]
+	imagerr2 = kresults2[:,3]
+
+	# Color adjustment
+	# actual_color = a x inst_color + b
+	# goes to inst_color = (1/a) * actual_color - b/a
+	# use that to incorporate inst. color errors
+
+	actualcolor = mag1-mag2
+	actualcolorerr = numpy.sqrt(magerr1**2.+magerr2**2.)
+	icolor = imag1-imag2
+	icolorerr = numpy.sqrt(imagerr1**2.+imagerr2**2.)
+
+	ainv, ainverr, ba, baerr = WLSFit(actualcolor, icolor, icolorerr)
+	a = 1/ainv
+	aerr = a * (ainverr/ainv)
+	b = -ba * a
+	berr = (-ba*a)*numpy.sqrt((baerr/ba)**2.+(aerr/a)**2.)
+	
+	# Filter zeropoint, with color dependence
+	# Mag_act = inst_mag + ZP + c x actual_color
+	# solve for ZP and c
+
+	zeropoint0 = mag1-imag1
+	zeropoint0err = numpy.sqrt(magerr1**2.+imagerr1**2.)
+
+	c, cerr, zp, zperr = WLSFit(actualcolor, zeropoint0, zeropoint0err)
+
+	results = [a, aerr, b, berr, c, cerr, zp, zperr]
+
+	return results
+
+def SingleAbsPhot(targphot1, stdphot1, stdmag1, stdmagerr1, targphot2, stdphot2, stdmag2, stdmagerr2):
+
+	k1, kerr1, kresults1 = FindExtinctionCoeff(stdphot1)
+	k2, kerr2, kresults2 = FindExtinctionCoeff(stdphot2)
+
+	AbsPhotCoeff = CalcAbsPhotCoeff(stdphot1, stdphot2, stdmag1, stdmagerr1, stdmag2, stdmagerr2)
+	a = AbsPhotCoeff[0]
+	aerr = AbsPhotCoeff[1]
+	b = AbsPhotCoeff[2]
+	berr = AbsPhotCoeff[3]
+	c = AbsPhotCoeff[4]
+	cerr = AbsPhotCoeff[5]
+	zp = AbsPhotCoeff[6]
+	zperr = AbsPhotCoeff[7]
+
+	imag1_uncorrect = 25.0-2.5*numpy.log10(targphot1[:,2])
+	imagerr1_uncorrect = 2.5 * 0.434 * targphot1[:,3]/targphot1[:,2]
+	imag2_uncorrect = 25.0-2.5*numpy.log10(targphot2[:,2])
+	imagerr2_uncorrect = 2.5 * 0.434 * targphot2[:,3]/targphot2[:,2]
+
+	imag1 = imag1_uncorrect - targphot1[:,1]*k1
+	imagerr1 = numpy.sqrt(imagerr1_uncorrect**2. + (targphot1[:,1]*kerr1)**2.)
+	imag2 = imag2_uncorrect - targphot2[:,1]*k2
+	imagerr2 = numpy.sqrt(imagerr2_uncorrect**2. + (targphot2[:,1]*kerr2)**2.)
+
+	icolor = imag1-imag2
+	icolorerr = numpy.sqrt(imagerr1**2.+imagerr2**2.)
+
+	calcmag = imag1 + zp + c*(a*icolor+b)
+
+	suberror1 = (a*icolor) * numpy.sqrt((aerr/a)**2.+(icolorerr/icolor)**2.)
+	suberror2 = numpy.sqrt(suberror1**2. + berr**2.)
+	suberror3 = (c*(a*icolor+b)) * numpy.sqrt((cerr/c)**2.+(suberror2/(a*icolor+b))**2.)
+	calcmagerr = numpy.sqrt(imagerr1**2. + zperr**2. + suberror3**2.)
+
+	avg_calcmag = numpy.average(calcmag)
+	avg_calcmagerr = numpy.sqrt(numpy.sum(calcmagerr**2)) / calcmag.size
+
+	return avg_calcmag, avg_calcmagerr
+
