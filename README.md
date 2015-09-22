@@ -1,5 +1,7 @@
 # MINERVAphot
 
+Last update: 09/22/15, v0.5
+
 This is a python-based photometry pipeline for MINERVA.
 
 Right now, it can do:
