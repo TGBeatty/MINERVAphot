@@ -5,6 +5,9 @@ import matplotlib.pyplot as plt
 import statsmodels.formula.api as sm
 from matplotlib.colors import LogNorm
 
+# THIS IS VERSION 0.5
+# UPDATED ON 09/22/15
+
 def MakeBias(firstarg, uselist=False, skip=False, outloc='./', telno='none'):
 	if not os.path.exists(outloc):
 		os.makedirs(outloc)
