@@ -25,8 +25,10 @@ Note that for these data we have modified the default STScI pipeline to include 
 
 Briefly:
 
+1. Uncalibrated
+  * `Uncalibrated/*uncal.fits` - raw uncalibrated images in measured counts (DN). This contains the counts in every group of every integration up the ramp. Each segment is composed of many integrations.
 
- - `Uncalibrated/*uncal.fits` ; raw uncalibrated images in measured counts (DN). This contains the counts in every group of every integration up the ramp. Each segment is composed of many integrations.
+2. Stage 1
 
  - `Stage1/*rateints.fits` ; rate images (counts/DN per second) output from the JWST pipeline stage 1 processing. This containts the slope fits to the samples in each integration.
  - `intermediate_products` ; these are intermediate products from the JWST pipeline, which can be viewed for diagnostic purposes but are not needed for producing time series.
